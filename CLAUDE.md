@@ -20,6 +20,7 @@ The Lattice Boltzmann Method is a computational fluid dynamics technique that si
 mini-lbm/
 ├── main.py              # Main entry point with simulation parameters and loop
 ├── lbm2d.py             # High-performance D2Q9 LBM implementation (Numba JIT)
+├── visualization.py     # Non-blocking visualization and animation export
 ├── tests/
 │   ├── __init__.py
 │   └── test_lbm.py      # Comprehensive test suite (33 tests)
@@ -47,7 +48,14 @@ uv sync --all-extras
 ### Run the Simulation
 
 ```bash
+# With live visualization (default)
 uv run python main.py
+
+# Without live visualization (headless, still saves animation)
+uv run python main.py --no-visualize
+
+# Custom output file
+uv run python main.py -o my_simulation.gif
 ```
 
 ### Run Tests
@@ -99,10 +107,50 @@ The code is optimized for CPU performance using:
 **Core:**
 - **numpy** (>=2.2.6): Array operations and numerical computing
 - **numba** (>=0.60.0): JIT compilation for CPU performance
+- **matplotlib** (>=3.8.0): Visualization and animation export
 
 **Development:**
 - **pytest** (>=8.0.0): Test framework
 - **pytest-benchmark** (>=4.0.0): Performance benchmarking
+
+## Visualization
+
+The simulation includes real-time visualization and automatic animation export.
+
+### Features
+
+- **Live display**: Real-time velocity magnitude field (default: enabled)
+- **Animation export**: Automatically saved to GIF/MP4 (always enabled)
+- **Performance-optimized**: Frame capture decoupled from simulation loop
+
+### Usage
+
+```bash
+# Live visualization + save animation
+uv run python main.py
+
+# Headless mode (no display window, still saves animation)
+uv run python main.py --no-visualize
+
+# Custom output filename
+uv run python main.py -o flow_animation.mp4
+```
+
+### Configuration (main.py)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `VIS_INTERVAL` | 100 | Steps between frame captures |
+| `OUTPUT_FILE` | "lbm_simulation.gif" | Output animation filename |
+
+### Performance Impact
+
+Visualization is designed to have minimal impact on simulation performance:
+
+1. **Sparse frame capture**: Only every `VIS_INTERVAL` steps (default: 100)
+2. **Non-blocking display**: Uses `plt.pause(0.001)` for responsive UI
+3. **Buffered saving**: Frames stored in memory, written at end
+4. **Separate rendering**: Animation saving uses dedicated figure instance
 
 ## Testing
 

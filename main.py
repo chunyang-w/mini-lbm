@@ -5,6 +5,7 @@ Date:               5th Nov 2025
 Github username:    chunyang-w
 """
 import time
+import argparse
 import numpy as np
 from lbm2d import LBM2D, warmup_jit, CS2
 
@@ -44,6 +45,10 @@ r_lbm = r / dx
 # Simulation time
 T_phys = 10.0              # Total physical time (seconds)
 n_steps = int(T_phys / dt)
+
+# Visualization settings
+VIS_INTERVAL = 100         # Steps between frame captures (adjust for performance)
+OUTPUT_FILE = "lbm_simulation.gif"  # Output animation file
 
 
 def sanity_check():
@@ -91,29 +96,94 @@ def sanity_check():
     return len([e for e in errors if e.startswith("ERROR")]) == 0
 
 
-def progress_callback(step, solver):
-    """Print progress and simulation statistics."""
-    vel_mag = solver.get_velocity_magnitude()
-    max_vel = np.max(vel_mag)
-    mean_rho = np.mean(solver.rho)
+def create_combined_callback(solver, visualizer=None, show_live=True, print_interval=1000):
+    """
+    Create a callback that handles both progress printing and visualization.
 
-    # Compute drag/lift on cylinder
-    cd, cl = solver.compute_drag_lift(cx_lbm, cy_lbm, r_lbm)
+    This approach ensures visualization doesn't slow down the simulation by:
+    1. Only capturing frames at VIS_INTERVAL
+    2. Using non-blocking display updates
+    3. Separating frame storage from display
 
-    print(f"Step {step:6d}/{n_steps}: "
-          f"max|u|={max_vel:.4f}, "
-          f"<rho>={mean_rho:.6f}, "
-          f"Cd={cd:.4f}, Cl={cl:.4f}")
+    Parameters
+    ----------
+    solver : LBM2D
+        The solver instance
+    visualizer : LBMVisualizer, optional
+        Visualizer for frame capture and display
+    show_live : bool
+        Whether to show live visualization
+    print_interval : int
+        Steps between progress prints
+
+    Returns
+    -------
+    callback : callable
+        Combined callback function
+    """
+    last_print = [0]
+    first_vis = [True]
+
+    def callback(step, solver):
+        # Progress printing (sparse)
+        if step - last_print[0] >= print_interval or step == n_steps:
+            vel_mag = solver.get_velocity_magnitude()
+            max_vel = np.max(vel_mag)
+            mean_rho = np.mean(solver.rho)
+            cd, cl = solver.compute_drag_lift(cx_lbm, cy_lbm, r_lbm)
+
+            print(f"Step {step:6d}/{n_steps}: "
+                  f"max|u|={max_vel:.4f}, "
+                  f"<rho>={mean_rho:.6f}, "
+                  f"Cd={cd:.4f}, Cl={cl:.4f}")
+            last_print[0] = step
+
+        # Visualization (at VIS_INTERVAL)
+        if visualizer is not None and step % VIS_INTERVAL == 0:
+            vel_mag = solver.get_velocity_magnitude()
+            phys_time = step * dt
+
+            # Initialize display on first visualization call
+            if first_vis[0] and show_live:
+                visualizer.show(vel_mag, solver.obstacle)
+                first_vis[0] = False
+
+            visualizer.update_frame(vel_mag, step, phys_time, store_frame=True)
+
+            if show_live:
+                import matplotlib.pyplot as plt
+                plt.pause(0.001)  # Minimal pause for display update
+
+    return callback
 
 
-def main():
-    """Run the LBM simulation."""
+def main(visualize: bool = True):
+    """
+    Run the LBM simulation.
+
+    Parameters
+    ----------
+    visualize : bool
+        If True, show real-time animation window (default: True)
+        Animation is always saved to file regardless of this setting.
+    """
     if not sanity_check():
         print("Simulation aborted due to parameter errors.")
         return
 
     print("Warming up JIT compilation...")
     warmup_jit()
+
+    # Set up visualization (import here to avoid matplotlib import if not needed for tests)
+    from visualization import LBMVisualizer
+    visualizer = LBMVisualizer(
+        Nx, Ny,
+        figsize=(14, 4),
+        cmap='coolwarm',
+        vmin=0.0,
+        vmax=u_inlet_lbm * 2.0,
+        title=f'LBM Flow Around Cylinder (Re={Re})'
+    )
 
     print("Initializing solver...")
     solver = LBM2D(Nx, Ny, tau, u_inlet_lbm)
@@ -122,11 +192,24 @@ def main():
     solver.set_cylinder_obstacle(cx_lbm, cy_lbm, r_lbm)
     print(f"Cylinder set at lattice position ({cx_lbm}, {cy_lbm}) with radius {r_lbm:.1f}")
 
+    # Create combined callback
+    callback = create_combined_callback(
+        solver,
+        visualizer=visualizer,
+        show_live=visualize,
+        print_interval=1000
+    )
+
     # Run simulation
     print(f"\nStarting simulation for {n_steps} steps...")
+    print(f"Visualization: {'ENABLED (live display)' if visualize else 'DISABLED (saving only)'}")
+    print(f"Frame capture interval: every {VIS_INTERVAL} steps")
+    print(f"Output file: {OUTPUT_FILE}\n")
+
     start_time = time.perf_counter()
 
-    solver.run(n_steps, callback=progress_callback, callback_interval=1000)
+    # Run with callback at every VIS_INTERVAL for frame capture
+    solver.run(n_steps, callback=callback, callback_interval=VIS_INTERVAL)
 
     elapsed = time.perf_counter() - start_time
     mlups = (Nx * Ny * n_steps) / elapsed / 1e6
@@ -147,8 +230,38 @@ def main():
     print(f"Lift coefficient Cl: {cl:.4f}")
     print("=" * 60)
 
+    # Save animation (always, regardless of visualize flag)
+    print(f"\nSaving animation to {OUTPUT_FILE}...")
+    visualizer.save_animation(
+        OUTPUT_FILE,
+        fps=30,
+        dpi=150,
+        obstacle_mask=solver.obstacle
+    )
+
+    # Close visualization window
+    visualizer.close()
+
     return solver
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='LBM D2Q9 Flow Simulation')
+    parser.add_argument(
+        '--no-visualize', '-nv',
+        action='store_true',
+        help='Disable live visualization (animation still saved to file)'
+    )
+    parser.add_argument(
+        '--output', '-o',
+        type=str,
+        default=OUTPUT_FILE,
+        help=f'Output animation filename (default: {OUTPUT_FILE})'
+    )
+    args = parser.parse_args()
+
+    # Update output file if specified
+    if args.output != OUTPUT_FILE:
+        OUTPUT_FILE = args.output
+
+    main(visualize=not args.no_visualize)
