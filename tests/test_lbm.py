@@ -552,3 +552,120 @@ class TestPerformance:
 
         # Should achieve at least 1 MLUPS (very conservative)
         assert mlups > 1.0, f"Performance too low: {mlups:.2f} MLUPS"
+
+
+# ============================================================================
+# Dynamic Obstacle Tests
+# ============================================================================
+
+class TestDynamicObstacles:
+    """Test dynamic obstacle addition and removal."""
+
+    def test_set_obstacle_cells(self, jit_warmup):
+        """Setting obstacle cells should update mask, velocity, and flag."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+        assert not solver.has_obstacle
+
+        cells = [(10, 5), (10, 6), (11, 5), (11, 6)]
+        solver.set_obstacle_cells(cells)
+
+        assert solver.has_obstacle
+        for i, j in cells:
+            assert solver.obstacle[i, j], f"Cell ({i},{j}) not marked"
+            assert solver.ux[i, j] == 0.0
+            assert solver.uy[i, j] == 0.0
+            assert np.isclose(solver.rho[i, j], 1.0)
+
+    def test_set_obstacle_cells_idempotent(self, jit_warmup):
+        """Setting the same cells twice should have no extra effect."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+        cells = [(10, 5), (10, 6)]
+
+        solver.set_obstacle_cells(cells)
+        f_after_first = solver.f[10, 5, :].copy()
+
+        solver.set_obstacle_cells(cells)  # Again
+        np.testing.assert_array_equal(solver.f[10, 5, :], f_after_first)
+
+    def test_set_obstacle_cells_empty(self, jit_warmup):
+        """Setting an empty cell list should be a no-op."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+        solver.set_obstacle_cells([])
+        assert not solver.has_obstacle
+
+    def test_clear_obstacle_cells(self, jit_warmup):
+        """Clearing obstacle cells should restore them to fluid."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+        cells = [(10, 5), (10, 6), (11, 5)]
+
+        solver.set_obstacle_cells(cells)
+        assert solver.has_obstacle
+
+        solver.clear_obstacle_cells([(10, 5), (10, 6)])
+
+        assert not solver.obstacle[10, 5]
+        assert not solver.obstacle[10, 6]
+        assert solver.obstacle[11, 5]  # Still an obstacle
+        assert solver.has_obstacle
+
+    def test_clear_all_obstacles(self, jit_warmup):
+        """Clearing all obstacles should leave an empty domain."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+        solver.set_cylinder_obstacle(20, 10, 3)
+        assert solver.has_obstacle
+        assert np.any(solver.obstacle)
+
+        solver.clear_all_obstacles()
+
+        assert not solver.has_obstacle
+        assert not np.any(solver.obstacle)
+
+    def test_dynamic_obstacle_simulation_stability(self, jit_warmup):
+        """Adding obstacles mid-simulation should not cause NaN."""
+        solver = LBM2D(60, 30, tau=0.8, u_inlet=0.05)
+
+        # Run a few steps first
+        solver.run(100)
+        assert not np.any(np.isnan(solver.rho))
+
+        # Add obstacle cells mid-simulation
+        cells = [(20, j) for j in range(5, 25)]
+        solver.set_obstacle_cells(cells)
+
+        # Continue running
+        solver.run(200)
+        assert not np.any(np.isnan(solver.rho)), "NaN after adding obstacles"
+        assert not np.any(np.isnan(solver.ux)), "NaN in ux after adding obstacles"
+
+    def test_dynamic_obstacle_remove_and_continue(self, jit_warmup):
+        """Removing obstacles mid-simulation should not cause NaN."""
+        solver = LBM2D(60, 30, tau=0.8, u_inlet=0.05)
+        solver.set_cylinder_obstacle(15, 15, 3)
+        solver.run(200)
+
+        # Remove all obstacles
+        solver.clear_all_obstacles()
+        assert not solver.has_obstacle
+
+        # Continue running
+        solver.run(200)
+        assert not np.any(np.isnan(solver.rho)), "NaN after removing obstacles"
+
+    def test_has_obstacle_flag_consistency(self, jit_warmup):
+        """The has_obstacle flag should stay consistent with the mask."""
+        solver = LBM2D(40, 20, tau=0.7, u_inlet=0.05)
+
+        assert not solver.has_obstacle
+        assert not np.any(solver.obstacle)
+
+        solver.set_obstacle_cells([(10, 10)])
+        assert solver.has_obstacle
+        assert np.any(solver.obstacle)
+
+        solver.clear_obstacle_cells([(10, 10)])
+        assert not solver.has_obstacle
+        assert not np.any(solver.obstacle)
+
+        # set_cylinder_obstacle should also set flag
+        solver.set_cylinder_obstacle(20, 10, 2)
+        assert solver.has_obstacle

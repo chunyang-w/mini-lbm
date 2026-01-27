@@ -230,6 +230,7 @@ class LBM2D:
 
         # Obstacle mask
         self.obstacle = np.zeros((Nx, Ny), dtype=np.bool_)
+        self.has_obstacle = False
 
         # Fluid node indices for inlet (excluding walls)
         self.inlet_j = np.arange(1, Ny - 1, dtype=np.int64)
@@ -275,6 +276,82 @@ class LBM2D:
                     self.obstacle[i, j] = True
                     self.ux[i, j] = 0.0
                     self.uy[i, j] = 0.0
+        self.has_obstacle = True
+
+    def set_obstacle_cells(self, cells):
+        """
+        Set specific lattice cells as obstacles.
+
+        Initializes new obstacle cells to equilibrium at rest (rho=1, u=0)
+        to avoid numerical instabilities.
+
+        Parameters
+        ----------
+        cells : list of (int, int)
+            List of (i, j) lattice coordinates to mark as obstacles
+        """
+        if not cells:
+            return
+        cells_arr = np.array(cells, dtype=np.int64)
+        ii = cells_arr[:, 0]
+        jj = cells_arr[:, 1]
+
+        # Only process cells not already obstacles
+        mask = ~self.obstacle[ii, jj]
+        if not np.any(mask):
+            return
+
+        new_ii = ii[mask]
+        new_jj = jj[mask]
+
+        self.obstacle[new_ii, new_jj] = True
+        self.ux[new_ii, new_jj] = 0.0
+        self.uy[new_ii, new_jj] = 0.0
+        self.rho[new_ii, new_jj] = 1.0
+        # Reset distributions to equilibrium at rest
+        self.f[new_ii, new_jj, :] = WEIGHTS[np.newaxis, :]
+        self.has_obstacle = True
+
+    def clear_obstacle_cells(self, cells):
+        """
+        Remove specific cells from the obstacle mask.
+
+        Cleared cells are initialized to equilibrium at rest so
+        flow develops naturally into the freed region.
+
+        Parameters
+        ----------
+        cells : list of (int, int)
+            List of (i, j) lattice coordinates to clear
+        """
+        if not cells:
+            return
+        cells_arr = np.array(cells, dtype=np.int64)
+        ii = cells_arr[:, 0]
+        jj = cells_arr[:, 1]
+
+        # Only process cells that are obstacles
+        mask = self.obstacle[ii, jj]
+        if not np.any(mask):
+            return
+
+        old_ii = ii[mask]
+        old_jj = jj[mask]
+
+        self.obstacle[old_ii, old_jj] = False
+        self.rho[old_ii, old_jj] = 1.0
+        self.ux[old_ii, old_jj] = 0.0
+        self.uy[old_ii, old_jj] = 0.0
+        self.f[old_ii, old_jj, :] = WEIGHTS[np.newaxis, :]
+        self.has_obstacle = np.any(self.obstacle)
+
+    def clear_all_obstacles(self):
+        """Remove all obstacles from the domain."""
+        indices = np.where(self.obstacle)
+        if len(indices[0]) == 0:
+            return
+        cells = list(zip(indices[0], indices[1]))
+        self.clear_obstacle_cells(cells)
 
     def step(self):
         """Perform one LBM time step."""
@@ -286,7 +363,7 @@ class LBM2D:
         collide_bgk(self.f, self.feq, self.omega)
 
         # 3. Apply bounce-back on obstacle before streaming
-        if np.any(self.obstacle):
+        if self.has_obstacle:
             apply_bounce_back_obstacle(self.f, self.obstacle, self.opposite)
 
         # 4. Streaming

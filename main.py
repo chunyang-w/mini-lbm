@@ -157,6 +157,119 @@ def create_combined_callback(solver, visualizer=None, show_live=True, print_inte
     return callback
 
 
+def main_interactive():
+    """
+    Run the LBM simulation in interactive mode.
+
+    Starts with an empty rectangular domain. The user can draw and erase
+    obstacles with the mouse while the simulation is running.
+    """
+    import matplotlib.pyplot as plt
+
+    if not sanity_check():
+        print("Simulation aborted due to parameter errors.")
+        return
+
+    print("Warming up JIT compilation...")
+    warmup_jit()
+
+    from visualization import LBMVisualizer
+    visualizer = LBMVisualizer(
+        Nx, Ny,
+        figsize=(14, 4),
+        cmap='coolwarm',
+        vmin=0.0,
+        vmax=u_inlet_lbm * 2.0,
+        title=f'LBM Interactive Mode (Re={Re})'
+    )
+
+    print("Initializing solver (empty domain)...")
+    solver = LBM2D(Nx, Ny, tau, u_inlet_lbm)
+    # No obstacle — the user will draw them interactively
+
+    # Show the initial velocity field
+    vel_mag = solver.get_velocity_magnitude()
+    visualizer.show(vel_mag)  # No obstacle overlay; drawer manages it
+
+    # Attach interactive obstacle drawer
+    from interactive import ObstacleDrawer
+    drawer = ObstacleDrawer(visualizer.fig, visualizer.ax, solver)
+
+    print("\n" + "=" * 60)
+    print("INTERACTIVE MODE")
+    print("=" * 60)
+    print("  Left click + drag:  Draw obstacles")
+    print("  Right click + drag: Erase obstacles")
+    print("  Scroll wheel / +/-: Change brush size")
+    print("  Space:              Pause / resume simulation")
+    print("  c:                  Clear all obstacles")
+    print("  q:                  Quit")
+    print("=" * 60 + "\n")
+
+    step = 0
+    last_print = 0
+    start_time = time.perf_counter()
+
+    try:
+        while not drawer.should_quit:
+            if not drawer.paused:
+                # Run a batch of simulation steps
+                for _ in range(VIS_INTERVAL):
+                    solver.step()
+                    step += 1
+
+            # Apply any pending obstacle changes from mouse input
+            changed = drawer.flush()
+
+            # Update display when simulation advances or obstacles change
+            if not drawer.paused or changed:
+                vel_mag = solver.get_velocity_magnitude()
+                phys_time = step * dt
+                visualizer.update_frame(
+                    vel_mag, step, phys_time,
+                    store_frame=not drawer.paused
+                )
+                drawer.update_obstacle_overlay()
+
+            # Progress log
+            if not drawer.paused and step - last_print >= 1000:
+                max_vel = np.max(vel_mag)
+                mean_rho = np.mean(solver.rho)
+                elapsed = time.perf_counter() - start_time
+                mlups = (Nx * Ny * step) / elapsed / 1e6 if elapsed > 0 else 0
+                print(f"Step {step:6d}: "
+                      f"max|u|={max_vel:.4f}, "
+                      f"<rho>={mean_rho:.6f}, "
+                      f"{mlups:.1f} MLUPS")
+                last_print = step
+
+            # Brief pause so matplotlib can process events.
+            # Longer pause when paused to reduce idle CPU usage.
+            try:
+                plt.pause(0.05 if drawer.paused else 0.001)
+            except Exception:
+                break  # Window was closed
+    except KeyboardInterrupt:
+        print("\nSimulation interrupted by user.")
+
+    elapsed = time.perf_counter() - start_time
+    if step > 0:
+        mlups = (Nx * Ny * step) / elapsed / 1e6
+        print(f"\nCompleted {step} steps in {elapsed:.2f}s ({mlups:.2f} MLUPS)")
+
+    # Save animation if frames were captured
+    if visualizer.frames:
+        print(f"\nSaving animation ({len(visualizer.frames)} frames) to {OUTPUT_FILE}...")
+        visualizer.save_animation(
+            OUTPUT_FILE, fps=30, dpi=150,
+            obstacle_mask=solver.obstacle
+        )
+
+    drawer.disconnect()
+    visualizer.close()
+    return solver
+
+
 def main(visualize: bool = True):
     """
     Run the LBM simulation.
@@ -248,6 +361,11 @@ def main(visualize: bool = True):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='LBM D2Q9 Flow Simulation')
     parser.add_argument(
+        '--interactive', '-i',
+        action='store_true',
+        help='Interactive mode: draw obstacles with the mouse on an empty domain'
+    )
+    parser.add_argument(
         '--no-visualize', '-nv',
         action='store_true',
         help='Disable live visualization (animation still saved to file)'
@@ -264,4 +382,7 @@ if __name__ == "__main__":
     if args.output != OUTPUT_FILE:
         OUTPUT_FILE = args.output
 
-    main(visualize=not args.no_visualize)
+    if args.interactive:
+        main_interactive()
+    else:
+        main(visualize=not args.no_visualize)
